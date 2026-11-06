@@ -1,0 +1,53 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compile LangVoice.exe with the .NET Framework csc (same as the installer)
+        shell: powershell
+        run: |
+          $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
+          & $csc /nologo /codepage:65001 /optimize+ /target:winexe `
+            /r:System.Windows.Forms.dll /r:System.Drawing.dll `
+            /out:LangVoice-test.exe LangVoice\LangVoice.cs
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: Check PowerShell scripts parse
+        shell: powershell
+        run: |
+          $bad = 0
+          foreach ($f in Get-ChildItem LangVoice\*.ps1) {
+            $errs = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($f.FullName, [ref]$null, [ref]$errs) | Out-Null
+            if ($errs) { $errs | ForEach-Object { Write-Host "$($f.Name): $_" }; $bad++ }
+          }
+          if ($bad) { exit 1 }
+
+      - name: Package LangVoice.zip
+        shell: pwsh
+        run: 7z a LangVoice.zip LangVoice
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LangVoice
+          path: LangVoice.zip
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: LangVoice.zip
+          generate_release_notes: true
