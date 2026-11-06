@@ -58,7 +58,7 @@ LangVoice/
 └── sounds/             วาง thai.wav / english.wav ของคุณเองที่นี่ (ไม่บังคับ)
 ```
 ทุกครั้งที่ push จะมี GitHub Actions คอมไพล์ทดสอบบน Windows ให้
-ถ้า push tag `v*` (เช่น `v1.0.0`) ระบบจะสร้าง `LangVoice.zip` และแนบไปกับหน้า Release ให้อัตโนมัติ
+ออกเวอร์ชันใหม่: ไปที่แท็บ Actions > Build > Run workflow แล้วใส่เวอร์ชัน (เช่น `v1.1.0`) ระบบจะสร้าง Release พร้อมแนบ `LangVoice.zip` ให้อัตโนมัติ (หรือ push tag `v*` ก็ได้)
 
 ## 📄 License
 [MIT](LICENSE) (เฉพาะซอร์สโค้ด) ไฟล์เสียงในโฟลเดอร์ `voices/` สร้างด้วยเสียงสังเคราะห์ Neural ของ Microsoft
