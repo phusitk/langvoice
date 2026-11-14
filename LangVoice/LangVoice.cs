@@ -14,6 +14,24 @@ static class Program
     [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr hWnd, IntPtr processId);
     [DllImport("user32.dll")] static extern IntPtr GetKeyboardLayout(uint threadId);
     [DllImport("user32.dll")] static extern bool DestroyIcon(IntPtr hIcon);
+    [DllImport("user32.dll")] static extern bool RegisterHotKey(IntPtr hWnd, int id, uint modifiers, uint vk);
+    [DllImport("user32.dll")] static extern bool UnregisterHotKey(IntPtr hWnd, int id);
+
+    const uint MOD_ALT = 0x1, MOD_CONTROL = 0x2, MOD_SHIFT = 0x4, MOD_NOREPEAT = 0x4000;
+    const int WM_HOTKEY = 0x0312;
+    const int HOTKEY_ID = 1;
+    const string HOTKEY_TEXT = "Ctrl+Alt+Shift+M";
+
+    // Hidden message-only window that receives the global hotkey (WM_HOTKEY).
+    class HotkeyWindow : NativeWindow
+    {
+        public HotkeyWindow() { CreateHandle(new CreateParams()); }
+        protected override void WndProc(ref Message m)
+        {
+            if (m.Msg == WM_HOTKEY && (int)m.WParam == HOTKEY_ID) ToggleMuted(true);
+            base.WndProc(ref m);
+        }
+    }
 
     const int LANG_THAI = 0x1E;     // primary language id (low 10 bits of LANGID)
     const int LANG_ENGLISH = 0x09;  // covers en-US, en-GB, en-AU, ...
@@ -32,6 +50,12 @@ static class Program
     static IntPtr lastWindow = IntPtr.Zero;
     static bool muted = false;
     static bool announceOnWindowSwitch = true;
+    static bool speakThai = true;
+    static bool speakEnglish = true;
+    static int lastPrimary = -1;
+    static ToolStripMenuItem speakThaiItem, speakEnglishItem;
+    static HotkeyWindow hotkeyWindow;
+    static bool hotkeyRegistered = false;
     static string voice = "female"; // female | male | custom
     static ToolStripMenuItem femaleItem, maleItem, customItem;
 
@@ -52,6 +76,11 @@ static class Program
             Application.EnableVisualStyles();
             BuildTray();
 
+            hotkeyWindow = new HotkeyWindow();
+            hotkeyRegistered = RegisterHotKey(hotkeyWindow.Handle, HOTKEY_ID,
+                MOD_CONTROL | MOD_ALT | MOD_SHIFT | MOD_NOREPEAT, (uint)Keys.M);
+            if (!hotkeyRegistered) muteItem.ShortcutKeyDisplayString = HOTKEY_TEXT + " (ถูกโปรแกรมอื่นใช้อยู่)";
+
             System.Windows.Forms.Timer timer = new System.Windows.Forms.Timer();
             timer.Interval = 150;
             timer.Tick += delegate { CheckLanguage(); };
@@ -60,6 +89,8 @@ static class Program
             Application.Run();
 
             timer.Stop();
+            if (hotkeyRegistered) UnregisterHotKey(hotkeyWindow.Handle, HOTKEY_ID);
+            hotkeyWindow.DestroyHandle();
             tray.Visible = false;
             tray.Dispose();
             if (currentIconHandle != IntPtr.Zero) DestroyIcon(currentIconHandle);
@@ -118,11 +149,24 @@ static class Program
 
         ContextMenuStrip menu = new ContextMenuStrip();
 
-        muteItem = new ToolStripMenuItem("ปิดเสียงชั่วคราว");
-        muteItem.CheckOnClick = true;
-        muteItem.Checked = muted;
-        muteItem.Click += delegate { muted = muteItem.Checked; SaveSettings(); };
+        muteItem = new ToolStripMenuItem("เปิดเสียงพูด  (หรือคลิกที่ไอคอน)");
+        muteItem.Checked = !muted;
+        muteItem.ShortcutKeyDisplayString = HOTKEY_TEXT;
+        muteItem.Click += delegate { ToggleMuted(false); };
         menu.Items.Add(muteItem);
+
+        ToolStripMenuItem langMenu = new ToolStripMenuItem("พูดเมื่อสลับเป็นภาษา");
+        speakThaiItem = new ToolStripMenuItem("ไทย");
+        speakEnglishItem = new ToolStripMenuItem("English");
+        speakThaiItem.CheckOnClick = true;
+        speakEnglishItem.CheckOnClick = true;
+        speakThaiItem.Checked = speakThai;
+        speakEnglishItem.Checked = speakEnglish;
+        speakThaiItem.Click += delegate { speakThai = speakThaiItem.Checked; SaveSettings(); };
+        speakEnglishItem.Click += delegate { speakEnglish = speakEnglishItem.Checked; SaveSettings(); };
+        langMenu.DropDownItems.Add(speakThaiItem);
+        langMenu.DropDownItems.Add(speakEnglishItem);
+        menu.Items.Add(langMenu);
 
         windowSwitchItem = new ToolStripMenuItem("แจ้งเตือนเมื่อสลับหน้าต่างด้วย");
         windowSwitchItem.CheckOnClick = true;
@@ -153,7 +197,31 @@ static class Program
         menu.Items.Add("ออกจากโปรแกรม", null, delegate { Application.Exit(); });
 
         tray.ContextMenuStrip = menu;
+        tray.MouseClick += delegate(object sender, MouseEventArgs e)
+        {
+            if (e.Button == MouseButtons.Left) ToggleMuted(false);
+        };
         tray.Visible = true;
+    }
+
+    // Turn the announcements on/off. When turning on, speak the current language as confirmation.
+    static void ToggleMuted(bool fromHotkey)
+    {
+        muted = !muted;
+        muteItem.Checked = !muted;
+        SaveSettings();
+        RedrawTrayIcon();
+        if (!muted)
+        {
+            if (lastPrimary == LANG_ENGLISH) Play(englishSound);
+            else Play(thaiSound);
+        }
+        if (fromHotkey)
+        {
+            tray.ShowBalloonTip(1500, "LangVoice",
+                muted ? "ปิดเสียงพูดแล้ว (กด " + HOTKEY_TEXT + " เพื่อเปิด)" : "เปิดเสียงพูดแล้ว",
+                ToolTipIcon.None);
+        }
     }
 
     static void OpenSoundMaker()
@@ -191,8 +259,8 @@ static class Program
         if (firstRun || muted) return;
         if (windowChanged && !announceOnWindowSwitch) return;
 
-        if (primary == LANG_THAI) Play(thaiSound);
-        else if (primary == LANG_ENGLISH) Play(englishSound);
+        if (primary == LANG_THAI && speakThai) Play(thaiSound);
+        else if (primary == LANG_ENGLISH && speakEnglish) Play(englishSound);
     }
 
     static void Play(SoundPlayer p)
@@ -205,27 +273,41 @@ static class Program
         try { p.Play(); } catch { }
     }
 
+    static int lastLangIdForIcon = 0;
+
+    static void RedrawTrayIcon()
+    {
+        if (lastPrimary >= 0) UpdateTrayIcon(lastPrimary, lastLangIdForIcon);
+        else SetTrayIcon("..", Color.Gray);
+    }
+
     static void UpdateTrayIcon(int primary, int langId)
     {
+        lastPrimary = primary;
+        lastLangIdForIcon = langId;
+        string suffix = muted ? " (ปิดเสียง)" : "";
         if (primary == LANG_THAI)
         {
             SetTrayIcon("TH", Color.FromArgb(200, 30, 45));
-            tray.Text = "LangVoice - ภาษาไทย";
+            tray.Text = "LangVoice - ภาษาไทย" + suffix;
         }
         else if (primary == LANG_ENGLISH)
         {
             SetTrayIcon("EN", Color.FromArgb(25, 90, 200));
-            tray.Text = "LangVoice - English";
+            tray.Text = "LangVoice - English" + suffix;
         }
         else
         {
             SetTrayIcon("??", Color.Gray);
-            tray.Text = "LangVoice - 0x" + langId.ToString("X4");
+            tray.Text = "LangVoice - 0x" + langId.ToString("X4") + suffix;
         }
     }
 
     static void SetTrayIcon(string text, Color background)
     {
+        if (muted) // faded colour so the muted state is visible at a glance
+            background = Color.FromArgb(
+                (background.R + 2 * 110) / 3, (background.G + 2 * 110) / 3, (background.B + 2 * 110) / 3);
         using (Bitmap bmp = new Bitmap(32, 32))
         using (Graphics g = Graphics.FromImage(bmp))
         using (Brush bg = new SolidBrush(background))
@@ -239,6 +321,15 @@ static class Program
             fmt.Alignment = StringAlignment.Center;
             fmt.LineAlignment = StringAlignment.Center;
             g.DrawString(text, font, Brushes.White, new RectangleF(0, 0, 32, 32), fmt);
+            if (muted)
+            {
+                using (Pen outline = new Pen(Color.FromArgb(40, 40, 40), 6f))
+                using (Pen slash = new Pen(Color.FromArgb(255, 80, 80), 3f))
+                {
+                    g.DrawLine(outline, 3, 29, 29, 3);
+                    g.DrawLine(slash, 3, 29, 29, 3);
+                }
+            }
 
             IntPtr handle = bmp.GetHicon();
             Icon newIcon = Icon.FromHandle(handle);
@@ -265,6 +356,8 @@ static class Program
                 bool val = kv[1].Trim() == "1";
                 if (key == "muted") muted = val;
                 else if (key == "announceOnWindowSwitch") announceOnWindowSwitch = val;
+                else if (key == "speakThai") speakThai = val;
+                else if (key == "speakEnglish") speakEnglish = val;
             }
         }
         catch { }
@@ -277,6 +370,8 @@ static class Program
             File.WriteAllLines(settingsPath, new string[] {
                 "muted=" + (muted ? "1" : "0"),
                 "announceOnWindowSwitch=" + (announceOnWindowSwitch ? "1" : "0"),
+                "speakThai=" + (speakThai ? "1" : "0"),
+                "speakEnglish=" + (speakEnglish ? "1" : "0"),
                 "voice=" + voice
             });
         }
