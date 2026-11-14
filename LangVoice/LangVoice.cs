@@ -11,7 +11,8 @@ using System.Windows.Forms;
 static class Program
 {
     [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
-    [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr hWnd, IntPtr processId);
+    [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassName(IntPtr hWnd, System.Text.StringBuilder name, int max);
     [DllImport("user32.dll")] static extern IntPtr GetKeyboardLayout(uint threadId);
     [DllImport("user32.dll")] static extern bool DestroyIcon(IntPtr hIcon);
     [DllImport("user32.dll")] static extern bool RegisterHotKey(IntPtr hWnd, int id, uint modifiers, uint vk);
@@ -49,7 +50,17 @@ static class Program
     static int lastLang = 0;
     static IntPtr lastWindow = IntPtr.Zero;
     static bool muted = false;
-    static bool announceOnWindowSwitch = true;
+    static bool announceOnWindowSwitch = false; // default: speak only when the language is switched
+    static readonly uint ownProcessId = (uint)System.Diagnostics.Process.GetCurrentProcess().Id;
+
+    // Windows shell surfaces (taskbar, Start, search, desktop, tray overflow...). Their keyboard
+    // layout often differs from the document you are typing in, so they are ignored entirely.
+    static readonly string[] ignoredWindowClasses = {
+        "Shell_TrayWnd", "Shell_SecondaryTrayWnd", "NotifyIconOverflowWindow",
+        "TopLevelWindowForOverflowXamlIsland", "Windows.UI.Core.CoreWindow",
+        "XamlExplorerHostIslandWindow", "Progman", "WorkerW", "TaskListThumbnailWnd",
+        "MultitaskingViewFrame", "ForegroundStaging", "#32768" /* menus */
+    };
     static bool speakThai = true;
     static bool speakEnglish = true;
     static int lastPrimary = -1;
@@ -241,7 +252,9 @@ static class Program
         IntPtr hwnd = GetForegroundWindow();
         if (hwnd == IntPtr.Zero) return;
 
-        uint threadId = GetWindowThreadProcessId(hwnd, IntPtr.Zero);
+        uint pid;
+        uint threadId = GetWindowThreadProcessId(hwnd, out pid);
+        if (pid == ownProcessId || IsShellWindow(hwnd)) return; // keep the previous state untouched
         int langId = (int)((long)GetKeyboardLayout(threadId) & 0xFFFF);
         if (langId == 0) return;
 
@@ -261,6 +274,15 @@ static class Program
 
         if (primary == LANG_THAI && speakThai) Play(thaiSound);
         else if (primary == LANG_ENGLISH && speakEnglish) Play(englishSound);
+    }
+
+    static bool IsShellWindow(IntPtr hwnd)
+    {
+        System.Text.StringBuilder sb = new System.Text.StringBuilder(256);
+        if (GetClassName(hwnd, sb, sb.Capacity) <= 0) return false;
+        string cls = sb.ToString();
+        foreach (string c in ignoredWindowClasses) if (cls == c) return true;
+        return false;
     }
 
     static void Play(SoundPlayer p)
@@ -355,7 +377,7 @@ static class Program
                 if (key == "voice") { string v = kv[1].Trim(); if (v == "female" || v == "male" || v == "custom") voice = v; continue; }
                 bool val = kv[1].Trim() == "1";
                 if (key == "muted") muted = val;
-                else if (key == "announceOnWindowSwitch") announceOnWindowSwitch = val;
+                else if (key == "speakOnWindowSwitch") announceOnWindowSwitch = val;
                 else if (key == "speakThai") speakThai = val;
                 else if (key == "speakEnglish") speakEnglish = val;
             }
@@ -369,7 +391,7 @@ static class Program
         {
             File.WriteAllLines(settingsPath, new string[] {
                 "muted=" + (muted ? "1" : "0"),
-                "announceOnWindowSwitch=" + (announceOnWindowSwitch ? "1" : "0"),
+                "speakOnWindowSwitch=" + (announceOnWindowSwitch ? "1" : "0"),
                 "speakThai=" + (speakThai ? "1" : "0"),
                 "speakEnglish=" + (speakEnglish ? "1" : "0"),
                 "voice=" + voice
